@@ -115,7 +115,6 @@ def convert(lang, tensor):
 
 print ("Input Language; index to word mapping")
 convert(inp_lang, input_tensor_train[0])
-print ()
 print ("Target Language; index to word mapping")
 convert(targ_lang, target_tensor_train[0])
 
@@ -241,3 +240,76 @@ sample_decoder_output, _, _ = decoder(tf.random.uniform((64, 1)),
                                       sample_hidden, sample_output)
 
 print ('Decoder output shape: (batch_size, vocab size) {}'.format(sample_decoder_output.shape))
+
+# 定义优化器和损失函数
+optimizer = tf.keras.optimizers.Adam()
+loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction='none')
+
+def loss_function(real, pred):
+    """
+    自定义loss func是为了不计算mask部分（padding成0部分）的loss值
+    :param real:
+    :param pred:
+    :return:
+    """
+    mask = tf.math.logical_not(tf.math.equal(real, 0))
+    loss_ = loss_object(real, pred)
+
+    mask = tf.cast(mask, dtype=loss_.dtype)
+    loss_ *= mask
+    return tf.reduce_mean(loss_)
+
+# 检查点
+checkpoint_dir = './training_checkpoints'
+checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+checkpoint = tf.train.Checkpoint(
+    optimizer=optimizer,
+    encoder=encoder, # 在checkpoint定义编码器用来做什么
+    decoder=decoder
+)
+
+@tf.function
+def train_step(inp, targ, enc_hidden):
+    loss = 0
+    with tf.GradientTape() as tape:
+        enc_output, enc_hidden = encoder(inp, enc_hidden)
+        dec_hidden = enc_hidden
+        dec_input = tf.expand_dims([targ_lang.word_index['<start>']] * BATCH_SIZE, 1)
+
+        # teacher forcing
+        for t in range(1, targ.shape[1]):
+            predictions, dec_hidden, _ = decoder(dec_input, dec_hidden, enc_output)
+            loss += loss_function(targ[:, t], predictions)
+
+            # use teacher forcing
+            dec_input = tf.expand_dims(targ[:, t], 1)
+
+    batch_loss = (loss / int(targ.shape[1]))
+    variables = encoder.trainable_variables + decoder.trainable_variables
+    gradients = tape.gradient(loss, variables)
+    optimizer.apply_gradients(zip(gradients, variables))
+
+    return batch_loss
+
+EPOCHS = 10
+
+for epoch in range(EPOCHS):
+    start = time.time()
+
+    enc_hidden = encoder.initialize_hidden_state()
+    total_loss = 0
+
+    for (batch, (inp, targ)) in enumerate(dataset.take(steps_per_epoch)):
+        batch_loss = train_step(inp, targ, enc_hidden)
+        total_loss += batch_loss
+
+        if batch % 100 == 0:
+            print('Epoch {} Batch {} Loss {:.4f}'.format(epoch + 1,
+                                                         batch,
+                                                         batch_loss.numpy()))
+    if (epoch + 1) % 2 == 0:
+        checkpoint.save(file_prefix=checkpoint_prefix)
+
+    print('Epoch {} Loss {:.4f}'.format(epoch + 1,
+                                        total_loss / steps_per_epoch))
+    print('Time taken for 1 epoch {} sec\n'.format(time.time() - start))
