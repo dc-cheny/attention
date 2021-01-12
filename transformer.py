@@ -42,16 +42,29 @@ class MultiHeadAttention(tf.keras.Model):
         self.wo = tf.keras.layers.Dense(model_size)
 
     def call(self, query, value):
-        # query shape: (batch, query_len, model_size)
-        # value shape: (batch, value_len, model_size)
-        score = tf.matmul(query, value, transpose_b=True) / tf.math.sqrt(tf.dtypes.cast(self.key_size, tf.float32))
-        # score shape: (batch, query_len, value_len)
+        # query has shape (batch, query_len, model_size)
+        # value has shape (batch, value_len, model_size)
+        heads = []
+        for i in range(self.h):
+            score = tf.matmul(self.wq[i](query), self.wk[i](value), transpose_b=True)
 
-        alignment = tf.nn.softmax(score, axis=2)
-        context = tf.matmul(alignment, value)
-        # context shape: (batch, query_len, value_size)
+            # Here we scale the score as described in the paper
+            score /= tf.math.sqrt(tf.dtypes.cast(self.key_size, tf.float32))
+            # score has shape (batch, query_len, value_len)
 
-        return context
+            alignment = tf.nn.softmax(score, axis=2)
+            # alignment has shape (batch, query_len, value_len)
+
+            head = tf.matmul(alignment, self.wv[i](value))
+            # head has shape (batch, decoder_len, value_size)
+            heads.append(head)
+
+        # Concatenate all the attention heads
+        # so that the last dimension summed up to model_size
+        heads = tf.concat(heads, axis=2)
+        heads = self.wo(heads)
+        # heads has shape (batch, query_len, model_size)
+        return heads
 
 
 class Encoder(tf.keras.Model):
